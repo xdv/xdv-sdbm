@@ -1,27 +1,90 @@
 // File: sdbm.ds - This file is part of XDV
 // Copyright (c) 2026 Dust LLC, and Contributors
 // Description:
-//   XDV Kernel - Secure Domain Boundary Manager (SDBM)
+//   XDV Secure Domain Boundary Manager (SDBM)
+//   Capability issuance/validation/revocation, boundary authz, attestation hooks, and audit emission.
 
 forge XdvSdbm {
+
+    const DOMAIN_K: UInt32 = 0;
+    const DOMAIN_Q: UInt32 = 1;
+    const DOMAIN_PHI: UInt32 = 2;
 
     const PERM_NONE: UInt64 = 0;
     const PERM_READ: UInt64 = 1;
     const PERM_WRITE: UInt64 = 2;
     const PERM_EXECUTE: UInt64 = 4;
-    const PERM_ALLOCATE: UInt64 = 8;
-    const PERM_TRANSFER: UInt64 = 16;
-    const PERM_MEASURE: UInt64 = 32;
-    const PERM_TRANSFORM: UInt64 = 64;
+    const PERM_TRANSFER: UInt64 = 8;
+    const PERM_MEASURE: UInt64 = 16;
+    const PERM_TRANSFORM: UInt64 = 32;
+
+    const OP_READ: UInt32 = 1;
+    const OP_WRITE: UInt32 = 2;
+    const OP_EXECUTE: UInt32 = 3;
+    const OP_TRANSFER: UInt32 = 4;
+    const OP_MEASURE: UInt32 = 5;
+    const OP_TRANSFORM: UInt32 = 6;
+
+    const SCOPE_LOCAL: UInt32 = 1;
+    const SCOPE_RESOURCE: UInt32 = 2;
+    const SCOPE_CROSS_DOMAIN: UInt32 = 3;
+    const SCOPE_ATTESTED_CROSS: UInt32 = 4;
+    const SCOPE_PHI_MUTATION: UInt32 = 5;
+
+    const POLICY_ALLOW_LOCAL: UInt64 = 1;
+    const POLICY_ALLOW_CROSS_DOMAIN: UInt64 = 2;
+    const POLICY_REQUIRE_ATTESTATION: UInt64 = 4;
+    const POLICY_REQUIRE_AUDIT: UInt64 = 8;
 
     const STATUS_OK: UInt32 = 0;
     const STATUS_DENIED: UInt32 = 1;
     const STATUS_INVALID_CAPABILITY: UInt32 = 2;
+    const STATUS_REVOKED: UInt32 = 3;
+    const STATUS_EXPIRED: UInt32 = 4;
+    const STATUS_INVALID_SCOPE: UInt32 = 5;
+    const STATUS_INVALID_SIGNATURE: UInt32 = 6;
+    const STATUS_INVALID_DOMAIN: UInt32 = 7;
+    const STATUS_POLICY_DENIED: UInt32 = 8;
+    const STATUS_ATTESTATION_REQUIRED: UInt32 = 9;
+    const STATUS_ATTESTATION_FAILED: UInt32 = 10;
 
     const TOKEN_INVALID: UInt64 = 0;
-    const TOKEN_BASE: UInt64 = 4096;
-    const PAYLOAD_EMPTY: UInt64 = 0;
-    const SIGNATURE_INVALID: UInt64 = 0;
+
+    const TOKEN_ISSUER_FACTOR: UInt64 = 100000000000000000;
+    const TOKEN_SUBJECT_FACTOR: UInt64 = 10000000000000;
+    const TOKEN_SOURCE_FACTOR: UInt64 = 1000000000000;
+    const TOKEN_TARGET_FACTOR: UInt64 = 100000000000;
+    const TOKEN_OPERATION_FACTOR: UInt64 = 1000000000;
+    const TOKEN_SCOPE_FACTOR: UInt64 = 10000000;
+    const TOKEN_ISSUED_FACTOR: UInt64 = 10000;
+    const TOKEN_TTL_FACTOR: UInt64 = 100;
+
+    const TOKEN_SUBJECT_CYCLE: UInt64 = 10000;
+    const TOKEN_ISSUED_CYCLE: UInt64 = 1000;
+    const TOKEN_TTL_CYCLE: UInt64 = 100;
+    const TOKEN_NONCE_CYCLE: UInt64 = 100;
+
+    const SIGNATURE_CYCLE: UInt64 = 1000003;
+    const SIGNATURE_SEED: UInt64 = 97;
+
+    const AUDIT_EVENT_CYCLE: UInt64 = 1000000000000;
+    const AUDIT_STATUS_FACTOR: UInt64 = 1000000000000;
+
+    const AUDIT_EVENT_ALLOW: UInt32 = 100;
+    const AUDIT_EVENT_DENY: UInt32 = 101;
+    const AUDIT_EVENT_REVOKED: UInt32 = 102;
+    const AUDIT_EVENT_ATTEST_FAIL: UInt32 = 103;
+
+    const DEFAULT_ISSUER_SECRET: UInt64 = 419;
+    const DEFAULT_ATTESTATION_DIGEST: UInt64 = 211;
+
+    const SDBM_INTERFACE_VERSION_MAJOR: UInt32 = 0;
+    const SDBM_INTERFACE_VERSION_MINOR: UInt32 = 1;
+    const SDBM_INTERFACE_VERSION_PATCH: UInt32 = 0;
+
+    const SDBM_CAPABILITY_API_VERSION: UInt32 = 1;
+    const SDBM_ATTESTATION_API_VERSION: UInt32 = 1;
+    const SDBM_AUDIT_API_VERSION: UInt32 = 1;
 
     proc K::sdbm_init() -> UInt32 {
         emit "XDV SDBM: Initializing secure domain boundary manager";
@@ -29,7 +92,7 @@ forge XdvSdbm {
         init_access_control();
         init_crypto_primitives();
         init_audit_system();
-        emit "XDV SDBM: Secure domain boundary manager initialized";
+        emit "XDV SDBM: capability, attestation, and audit contracts online";
         return STATUS_OK;
     }
 
@@ -44,58 +107,1004 @@ forge XdvSdbm {
     }
 
     proc K::init_crypto_primitives() -> UInt32 {
-        emit "XDV SDBM: Initializing cryptographic primitives";
+        emit "XDV SDBM: Initializing deterministic signature primitives";
         return STATUS_OK;
     }
 
     proc K::init_audit_system() -> UInt32 {
-        emit "XDV SDBM: Initializing audit system";
+        emit "XDV SDBM: Initializing deterministic audit channel";
         return STATUS_OK;
     }
 
-    proc K::create_capability(subject: UInt64, permissions: UInt64) -> UInt64 {
-        if permissions == PERM_NONE {
-            return TOKEN_INVALID;
+    proc K::normalize_u64(value: UInt64, cycle: UInt64) -> UInt64 {
+        if cycle == 0 {
+            return 0;
         } else {
-            return TOKEN_BASE + subject + permissions;
+            let quotient = value / cycle;
+            return value - (quotient * cycle);
         }
+    }
+
+    proc K::has_flag(mask: UInt64, flag: UInt64) -> UInt32 {
+        if flag == 0 {
+            return 0;
+        } else {
+            let masked = mask & flag;
+            if masked == flag {
+                return 1;
+            } else {
+                return 0;
+            }
+        }
+    }
+
+    proc K::is_valid_domain(domain: UInt32) -> UInt32 {
+        if domain == DOMAIN_K {
+            return 1;
+        } else {
+            if domain == DOMAIN_Q {
+                return 1;
+            } else {
+                if domain == DOMAIN_PHI {
+                    return 1;
+                } else {
+                    return 0;
+                }
+            }
+        }
+    }
+
+    proc K::is_valid_operation(operation: UInt32) -> UInt32 {
+        if operation == OP_READ {
+            return 1;
+        } else {
+            if operation == OP_WRITE {
+                return 1;
+            } else {
+                if operation == OP_EXECUTE {
+                    return 1;
+                } else {
+                    if operation == OP_TRANSFER {
+                        return 1;
+                    } else {
+                        if operation == OP_MEASURE {
+                            return 1;
+                        } else {
+                            if operation == OP_TRANSFORM {
+                                return 1;
+                            } else {
+                                return 0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    proc K::is_valid_scope(scope: UInt32) -> UInt32 {
+        if scope == SCOPE_LOCAL {
+            return 1;
+        } else {
+            if scope == SCOPE_RESOURCE {
+                return 1;
+            } else {
+                if scope == SCOPE_CROSS_DOMAIN {
+                    return 1;
+                } else {
+                    if scope == SCOPE_ATTESTED_CROSS {
+                        return 1;
+                    } else {
+                        if scope == SCOPE_PHI_MUTATION {
+                            return 1;
+                        } else {
+                            return 0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    proc K::requires_attestation(domain: UInt32) -> UInt32 {
+        if domain == DOMAIN_Q {
+            return 1;
+        } else {
+            if domain == DOMAIN_PHI {
+                return 1;
+            } else {
+                return 0;
+            }
+        }
+    }
+
+    proc K::operation_required_permission(operation: UInt32) -> UInt64 {
+        if operation == OP_READ {
+            return PERM_READ;
+        } else {
+            if operation == OP_WRITE {
+                return PERM_WRITE;
+            } else {
+                if operation == OP_EXECUTE {
+                    return PERM_EXECUTE;
+                } else {
+                    if operation == OP_TRANSFER {
+                        return PERM_TRANSFER;
+                    } else {
+                        if operation == OP_MEASURE {
+                            return PERM_MEASURE;
+                        } else {
+                            if operation == OP_TRANSFORM {
+                                return PERM_TRANSFORM;
+                            } else {
+                                return PERM_NONE;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    proc K::scope_supports_operation(scope: UInt32, operation: UInt32) -> UInt32 {
+        if operation == OP_READ {
+            if scope == SCOPE_LOCAL {
+                return 1;
+            } else {
+                if scope == SCOPE_RESOURCE {
+                    return 1;
+                } else {
+                    return 0;
+                }
+            }
+        } else {
+            if operation == OP_WRITE {
+                if scope == SCOPE_LOCAL {
+                    return 1;
+                } else {
+                    if scope == SCOPE_RESOURCE {
+                        return 1;
+                    } else {
+                        return 0;
+                    }
+                }
+            } else {
+                if operation == OP_EXECUTE {
+                    if scope == SCOPE_LOCAL {
+                        return 1;
+                    } else {
+                        if scope == SCOPE_RESOURCE {
+                            return 1;
+                        } else {
+                            return 0;
+                        }
+                    }
+                } else {
+                    if operation == OP_TRANSFER {
+                        if scope == SCOPE_CROSS_DOMAIN {
+                            return 1;
+                        } else {
+                            if scope == SCOPE_ATTESTED_CROSS {
+                                return 1;
+                            } else {
+                                return 0;
+                            }
+                        }
+                    } else {
+                        if operation == OP_MEASURE {
+                            if scope == SCOPE_CROSS_DOMAIN {
+                                return 1;
+                            } else {
+                                if scope == SCOPE_ATTESTED_CROSS {
+                                    return 1;
+                                } else {
+                                    return 0;
+                                }
+                            }
+                        } else {
+                            if operation == OP_TRANSFORM {
+                                if scope == SCOPE_PHI_MUTATION {
+                                    return 1;
+                                } else {
+                                    if scope == SCOPE_ATTESTED_CROSS {
+                                        return 1;
+                                    } else {
+                                        return 0;
+                                    }
+                                }
+                            } else {
+                                return 0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    proc K::default_operation_from_permissions(permissions: UInt64) -> UInt32 {
+        let has_read = has_flag(permissions, PERM_READ);
+        if has_read == 1 {
+            return OP_READ;
+        } else {
+            let has_write = has_flag(permissions, PERM_WRITE);
+            if has_write == 1 {
+                return OP_WRITE;
+            } else {
+                let has_execute = has_flag(permissions, PERM_EXECUTE);
+                if has_execute == 1 {
+                    return OP_EXECUTE;
+                } else {
+                    let has_transfer = has_flag(permissions, PERM_TRANSFER);
+                    if has_transfer == 1 {
+                        return OP_TRANSFER;
+                    } else {
+                        let has_measure = has_flag(permissions, PERM_MEASURE);
+                        if has_measure == 1 {
+                            return OP_MEASURE;
+                        } else {
+                            let has_transform = has_flag(permissions, PERM_TRANSFORM);
+                            if has_transform == 1 {
+                                return OP_TRANSFORM;
+                            } else {
+                                return 0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    proc K::compose_token_id(
+        issuer: UInt32,
+        subject: UInt32,
+        source_domain: UInt32,
+        target_domain: UInt32,
+        operation: UInt32,
+        scope: UInt32,
+        issued_tick: UInt32,
+        ttl: UInt32,
+        nonce: UInt32
+    ) -> UInt64 {
+        let subject_norm = normalize_u64(subject, TOKEN_SUBJECT_CYCLE);
+        let issued_norm = normalize_u64(issued_tick, TOKEN_ISSUED_CYCLE);
+        let ttl_norm = normalize_u64(ttl, TOKEN_TTL_CYCLE);
+        let nonce_norm = normalize_u64(nonce, TOKEN_NONCE_CYCLE);
+
+        return (issuer * TOKEN_ISSUER_FACTOR)
+            + (subject_norm * TOKEN_SUBJECT_FACTOR)
+            + (source_domain * TOKEN_SOURCE_FACTOR)
+            + (target_domain * TOKEN_TARGET_FACTOR)
+            + (operation * TOKEN_OPERATION_FACTOR)
+            + (scope * TOKEN_SCOPE_FACTOR)
+            + (issued_norm * TOKEN_ISSUED_FACTOR)
+            + (ttl_norm * TOKEN_TTL_FACTOR)
+            + nonce_norm;
+    }
+
+    proc K::token_issuer(token: UInt64) -> UInt32 {
+        return token / TOKEN_ISSUER_FACTOR;
+    }
+
+    proc K::token_subject(token: UInt64) -> UInt32 {
+        let issuer = token_issuer(token);
+        let rem = token - (issuer * TOKEN_ISSUER_FACTOR);
+        return rem / TOKEN_SUBJECT_FACTOR;
+    }
+
+    proc K::token_source(token: UInt64) -> UInt32 {
+        let issuer = token_issuer(token);
+        let subject = token_subject(token);
+        let rem = token - (issuer * TOKEN_ISSUER_FACTOR) - (subject * TOKEN_SUBJECT_FACTOR);
+        return rem / TOKEN_SOURCE_FACTOR;
+    }
+
+    proc K::token_target(token: UInt64) -> UInt32 {
+        let issuer = token_issuer(token);
+        let subject = token_subject(token);
+        let source = token_source(token);
+        let rem = token - (issuer * TOKEN_ISSUER_FACTOR) - (subject * TOKEN_SUBJECT_FACTOR) - (source * TOKEN_SOURCE_FACTOR);
+        return rem / TOKEN_TARGET_FACTOR;
+    }
+
+    proc K::token_operation(token: UInt64) -> UInt32 {
+        let issuer = token_issuer(token);
+        let subject = token_subject(token);
+        let source = token_source(token);
+        let target = token_target(token);
+        let rem = token - (issuer * TOKEN_ISSUER_FACTOR) - (subject * TOKEN_SUBJECT_FACTOR) - (source * TOKEN_SOURCE_FACTOR) - (target * TOKEN_TARGET_FACTOR);
+        return rem / TOKEN_OPERATION_FACTOR;
+    }
+
+    proc K::token_scope(token: UInt64) -> UInt32 {
+        let issuer = token_issuer(token);
+        let subject = token_subject(token);
+        let source = token_source(token);
+        let target = token_target(token);
+        let operation = token_operation(token);
+        let rem = token - (issuer * TOKEN_ISSUER_FACTOR) - (subject * TOKEN_SUBJECT_FACTOR) - (source * TOKEN_SOURCE_FACTOR) - (target * TOKEN_TARGET_FACTOR) - (operation * TOKEN_OPERATION_FACTOR);
+        return rem / TOKEN_SCOPE_FACTOR;
+    }
+
+    proc K::token_issued_tick(token: UInt64) -> UInt32 {
+        let issuer = token_issuer(token);
+        let subject = token_subject(token);
+        let source = token_source(token);
+        let target = token_target(token);
+        let operation = token_operation(token);
+        let scope = token_scope(token);
+        let rem = token - (issuer * TOKEN_ISSUER_FACTOR) - (subject * TOKEN_SUBJECT_FACTOR) - (source * TOKEN_SOURCE_FACTOR) - (target * TOKEN_TARGET_FACTOR) - (operation * TOKEN_OPERATION_FACTOR) - (scope * TOKEN_SCOPE_FACTOR);
+        return rem / TOKEN_ISSUED_FACTOR;
+    }
+
+    proc K::token_ttl(token: UInt64) -> UInt32 {
+        let issuer = token_issuer(token);
+        let subject = token_subject(token);
+        let source = token_source(token);
+        let target = token_target(token);
+        let operation = token_operation(token);
+        let scope = token_scope(token);
+        let issued = token_issued_tick(token);
+        let rem = token - (issuer * TOKEN_ISSUER_FACTOR) - (subject * TOKEN_SUBJECT_FACTOR) - (source * TOKEN_SOURCE_FACTOR) - (target * TOKEN_TARGET_FACTOR) - (operation * TOKEN_OPERATION_FACTOR) - (scope * TOKEN_SCOPE_FACTOR) - (issued * TOKEN_ISSUED_FACTOR);
+        return rem / TOKEN_TTL_FACTOR;
+    }
+
+    proc K::token_nonce(token: UInt64) -> UInt32 {
+        let issuer = token_issuer(token);
+        let subject = token_subject(token);
+        let source = token_source(token);
+        let target = token_target(token);
+        let operation = token_operation(token);
+        let scope = token_scope(token);
+        let issued = token_issued_tick(token);
+        let ttl = token_ttl(token);
+        return token - (issuer * TOKEN_ISSUER_FACTOR) - (subject * TOKEN_SUBJECT_FACTOR) - (source * TOKEN_SOURCE_FACTOR) - (target * TOKEN_TARGET_FACTOR) - (operation * TOKEN_OPERATION_FACTOR) - (scope * TOKEN_SCOPE_FACTOR) - (issued * TOKEN_ISSUED_FACTOR) - (ttl * TOKEN_TTL_FACTOR);
+    }
+
+    proc K::compute_signature(token: UInt64, issuer_secret: UInt64, attestation_digest: UInt64) -> UInt64 {
+        let issued = token_issued_tick(token);
+        let token_mix = normalize_u64(token, SIGNATURE_CYCLE);
+        let mixed = token_mix + (issuer_secret * 131) + (attestation_digest * 17) + (issued * 29) + SIGNATURE_SEED;
+        return normalize_u64(mixed, SIGNATURE_CYCLE);
+    }
+
+    proc K::sign_capability_token(token: UInt64, issuer_secret: UInt64, attestation_digest: UInt64) -> UInt64 {
+        if token == TOKEN_INVALID {
+            return 0;
+        } else {
+            return compute_signature(token, issuer_secret, attestation_digest);
+        }
+    }
+
+    proc K::issue_capability_token(
+        issuer: UInt32,
+        subject: UInt32,
+        source_domain: UInt32,
+        target_domain: UInt32,
+        operation: UInt32,
+        scope: UInt32,
+        issued_tick: UInt32,
+        ttl: UInt32,
+        nonce: UInt32,
+        permission_mask: UInt64,
+        policy_flags: UInt64
+    ) -> UInt64 {
+        let issuer_ok = is_valid_domain(issuer);
+        if issuer_ok == 1 {
+        } else {
+            return TOKEN_INVALID;
+        }
+
+        let source_ok = is_valid_domain(source_domain);
+        if source_ok == 1 {
+        } else {
+            return TOKEN_INVALID;
+        }
+
+        let target_ok = is_valid_domain(target_domain);
+        if target_ok == 1 {
+        } else {
+            return TOKEN_INVALID;
+        }
+
+        let operation_ok = is_valid_operation(operation);
+        if operation_ok == 1 {
+        } else {
+            return TOKEN_INVALID;
+        }
+
+        let scope_ok = is_valid_scope(scope);
+        if scope_ok == 1 {
+        } else {
+            return TOKEN_INVALID;
+        }
+
+        let scope_support = scope_supports_operation(scope, operation);
+        if scope_support == 1 {
+        } else {
+            return TOKEN_INVALID;
+        }
+
+        if ttl == 0 {
+            return TOKEN_INVALID;
+        }
+
+        let required_perm = operation_required_permission(operation);
+        if required_perm == PERM_NONE {
+            return TOKEN_INVALID;
+        }
+
+        let permission_ok = has_flag(permission_mask, required_perm);
+        if permission_ok == 1 {
+        } else {
+            return TOKEN_INVALID;
+        }
+
+        if source_domain == target_domain {
+            let local_allowed = has_flag(policy_flags, POLICY_ALLOW_LOCAL);
+            if local_allowed == 1 {
+            } else {
+                return TOKEN_INVALID;
+            }
+        } else {
+            let cross_allowed = has_flag(policy_flags, POLICY_ALLOW_CROSS_DOMAIN);
+            if cross_allowed == 1 {
+            } else {
+                return TOKEN_INVALID;
+            }
+        }
+
+        if operation == OP_TRANSFORM {
+            if target_domain == DOMAIN_PHI {
+            } else {
+                return TOKEN_INVALID;
+            }
+        }
+
+        if operation == OP_MEASURE {
+            if source_domain == DOMAIN_Q {
+            } else {
+                return TOKEN_INVALID;
+            }
+        }
+
+        return compose_token_id(
+            issuer,
+            subject,
+            source_domain,
+            target_domain,
+            operation,
+            scope,
+            issued_tick,
+            ttl,
+            nonce
+        );
+    }
+
+    proc K::validate_capability_token(
+        token: UInt64,
+        signature: UInt64,
+        expected_source_domain: UInt32,
+        expected_target_domain: UInt32,
+        expected_operation: UInt32,
+        expected_scope: UInt32,
+        expected_subject: UInt32,
+        logical_tick: UInt32,
+        revoked_token: UInt64,
+        revoked_before_tick: UInt32,
+        issuer_secret: UInt64,
+        attestation_digest: UInt64
+    ) -> UInt32 {
+        if token == TOKEN_INVALID {
+            return STATUS_INVALID_CAPABILITY;
+        }
+
+        let source_ok = is_valid_domain(expected_source_domain);
+        if source_ok == 1 {
+        } else {
+            return STATUS_INVALID_DOMAIN;
+        }
+
+        let target_ok = is_valid_domain(expected_target_domain);
+        if target_ok == 1 {
+        } else {
+            return STATUS_INVALID_DOMAIN;
+        }
+
+        let op_ok = is_valid_operation(expected_operation);
+        if op_ok == 1 {
+        } else {
+            return STATUS_POLICY_DENIED;
+        }
+
+        let scope_ok = is_valid_scope(expected_scope);
+        if scope_ok == 1 {
+        } else {
+            return STATUS_INVALID_SCOPE;
+        }
+
+        let token_source_domain = token_source(token);
+        let token_target_domain = token_target(token);
+        let token_op = token_operation(token);
+        let token_sc = token_scope(token);
+        let token_sub = token_subject(token);
+        let token_issued = token_issued_tick(token);
+        let token_lifetime = token_ttl(token);
+
+        let token_source_ok = is_valid_domain(token_source_domain);
+        if token_source_ok == 1 {
+        } else {
+            return STATUS_INVALID_CAPABILITY;
+        }
+
+        let token_target_ok = is_valid_domain(token_target_domain);
+        if token_target_ok == 1 {
+        } else {
+            return STATUS_INVALID_CAPABILITY;
+        }
+
+        let token_op_ok = is_valid_operation(token_op);
+        if token_op_ok == 1 {
+        } else {
+            return STATUS_INVALID_CAPABILITY;
+        }
+
+        let token_scope_ok = is_valid_scope(token_sc);
+        if token_scope_ok == 1 {
+        } else {
+            return STATUS_INVALID_CAPABILITY;
+        }
+
+        if token_source_domain == expected_source_domain {
+        } else {
+            return STATUS_DENIED;
+        }
+
+        if token_target_domain == expected_target_domain {
+        } else {
+            return STATUS_DENIED;
+        }
+
+        if token_op == expected_operation {
+        } else {
+            return STATUS_DENIED;
+        }
+
+        if token_sc == expected_scope {
+        } else {
+            return STATUS_INVALID_SCOPE;
+        }
+
+        if token_sub == expected_subject {
+        } else {
+            return STATUS_DENIED;
+        }
+
+        let valid_scope_combo = scope_supports_operation(token_sc, token_op);
+        if valid_scope_combo == 1 {
+        } else {
+            return STATUS_INVALID_SCOPE;
+        }
+
+        if token_lifetime == 0 {
+            return STATUS_EXPIRED;
+        }
+
+        if logical_tick < token_issued {
+            return STATUS_EXPIRED;
+        }
+
+        let age = logical_tick - token_issued;
+        if age > token_lifetime {
+            return STATUS_EXPIRED;
+        }
+
+        let expected_signature = compute_signature(token, issuer_secret, attestation_digest);
+        if signature == expected_signature {
+        } else {
+            return STATUS_INVALID_SIGNATURE;
+        }
+
+        if revoked_token == TOKEN_INVALID {
+        } else {
+            if token == revoked_token {
+                return STATUS_REVOKED;
+            }
+        }
+
+        if revoked_before_tick == 0 {
+        } else {
+            if token_issued <= revoked_before_tick {
+                return STATUS_REVOKED;
+            }
+        }
+
+        return STATUS_OK;
+    }
+
+    proc K::enforce_boundary_policy(
+        source_domain: UInt32,
+        target_domain: UInt32,
+        operation: UInt32,
+        scope: UInt32,
+        policy_flags: UInt64,
+        provider_attested: UInt32
+    ) -> UInt32 {
+        let scope_allowed = scope_supports_operation(scope, operation);
+        if scope_allowed == 1 {
+        } else {
+            return STATUS_INVALID_SCOPE;
+        }
+
+        if source_domain == target_domain {
+            let local_ok = has_flag(policy_flags, POLICY_ALLOW_LOCAL);
+            if local_ok == 1 {
+            } else {
+                return STATUS_POLICY_DENIED;
+            }
+        } else {
+            let cross_ok = has_flag(policy_flags, POLICY_ALLOW_CROSS_DOMAIN);
+            if cross_ok == 1 {
+            } else {
+                return STATUS_POLICY_DENIED;
+            }
+        }
+
+        if operation == OP_TRANSFORM {
+            if target_domain == DOMAIN_PHI {
+            } else {
+                return STATUS_POLICY_DENIED;
+            }
+        }
+
+        if operation == OP_MEASURE {
+            if source_domain == DOMAIN_Q {
+            } else {
+                return STATUS_POLICY_DENIED;
+            }
+        }
+
+        let target_attestation = requires_attestation(target_domain);
+        if target_attestation == 1 {
+            let must_attest = has_flag(policy_flags, POLICY_REQUIRE_ATTESTATION);
+            if must_attest == 1 {
+                if provider_attested == 1 {
+                } else {
+                    return STATUS_ATTESTATION_REQUIRED;
+                }
+            }
+        }
+
+        return STATUS_OK;
+    }
+
+    proc K::authorize_boundary_transition(
+        token: UInt64,
+        signature: UInt64,
+        requested_operation: UInt32,
+        requested_scope: UInt32,
+        requested_permissions: UInt64,
+        caller_domain: UInt32,
+        target_domain: UInt32,
+        process_id: UInt32,
+        logical_tick: UInt32,
+        revoked_token: UInt64,
+        revoked_before_tick: UInt32,
+        issuer_secret: UInt64,
+        attestation_digest: UInt64,
+        provider_attested: UInt32,
+        policy_flags: UInt64
+    ) -> UInt32 {
+        let token_status = validate_capability_token(
+            token,
+            signature,
+            caller_domain,
+            target_domain,
+            requested_operation,
+            requested_scope,
+            process_id,
+            logical_tick,
+            revoked_token,
+            revoked_before_tick,
+            issuer_secret,
+            attestation_digest
+        );
+
+        if token_status == STATUS_OK {
+        } else {
+            return token_status;
+        }
+
+        let required_permission = operation_required_permission(requested_operation);
+        let permission_ok = has_flag(requested_permissions, required_permission);
+        if permission_ok == 1 {
+        } else {
+            return STATUS_DENIED;
+        }
+
+        let policy_status = enforce_boundary_policy(
+            caller_domain,
+            target_domain,
+            requested_operation,
+            requested_scope,
+            policy_flags,
+            provider_attested
+        );
+
+        if policy_status == STATUS_OK {
+            return STATUS_OK;
+        } else {
+            return policy_status;
+        }
+    }
+
+    proc K::derive_attestation_digest(
+        firmware_measurement: UInt64,
+        declared_capabilities: UInt64,
+        provider_version: UInt32
+    ) -> UInt64 {
+        let mixed = firmware_measurement + (declared_capabilities * 3) + (provider_version * 11);
+        return normalize_u64(mixed, SIGNATURE_CYCLE);
+    }
+
+    proc K::validate_provider_attestation(
+        provider_domain: UInt32,
+        firmware_measurement: UInt64,
+        declared_capabilities: UInt64,
+        provider_version: UInt32,
+        expected_measurement: UInt64,
+        required_capabilities: UInt64,
+        min_provider_version: UInt32
+    ) -> UInt32 {
+        let valid_domain = is_valid_domain(provider_domain);
+        if valid_domain == 1 {
+        } else {
+            return STATUS_INVALID_DOMAIN;
+        }
+
+        let attestation_needed = requires_attestation(provider_domain);
+        if attestation_needed == 1 {
+        } else {
+            return STATUS_OK;
+        }
+
+        if provider_version < min_provider_version {
+            return STATUS_ATTESTATION_FAILED;
+        }
+
+        if firmware_measurement == expected_measurement {
+        } else {
+            return STATUS_ATTESTATION_FAILED;
+        }
+
+        let caps_ok = has_flag(declared_capabilities, required_capabilities);
+        if caps_ok == 1 {
+            return STATUS_OK;
+        } else {
+            return STATUS_ATTESTATION_FAILED;
+        }
+    }
+
+    proc K::audit_event_code_for_status(status: UInt32) -> UInt32 {
+        if status == STATUS_OK {
+            return AUDIT_EVENT_ALLOW;
+        } else {
+            if status == STATUS_REVOKED {
+                return AUDIT_EVENT_REVOKED;
+            } else {
+                if status == STATUS_ATTESTATION_REQUIRED {
+                    return AUDIT_EVENT_ATTEST_FAIL;
+                } else {
+                    if status == STATUS_ATTESTATION_FAILED {
+                        return AUDIT_EVENT_ATTEST_FAIL;
+                    } else {
+                        return AUDIT_EVENT_DENY;
+                    }
+                }
+            }
+        }
+    }
+
+    proc K::compute_audit_event_id(
+        event_code: UInt32,
+        token: UInt64,
+        source_domain: UInt32,
+        target_domain: UInt32,
+        subject: UInt32,
+        logical_tick: UInt32
+    ) -> UInt64 {
+        let token_mix = normalize_u64(token, 997);
+        let base = (event_code * 10000000000)
+            + (source_domain * 100000000)
+            + (target_domain * 1000000)
+            + (subject * 1000)
+            + logical_tick;
+
+        let event_id = normalize_u64(base + token_mix, AUDIT_EVENT_CYCLE);
+        return event_id + 1;
+    }
+
+    proc K::emit_audit_event(
+        token: UInt64,
+        source_domain: UInt32,
+        target_domain: UInt32,
+        subject: UInt32,
+        status: UInt32,
+        logical_tick: UInt32
+    ) -> UInt64 {
+        let event_code = audit_event_code_for_status(status);
+        let event_id = compute_audit_event_id(event_code, token, source_domain, target_domain, subject, logical_tick);
+
+        if status == STATUS_OK {
+            emit "XDV SDBM: audit allow event emitted";
+        } else {
+            emit "XDV SDBM: audit deny event emitted";
+        }
+
+        return event_id;
+    }
+
+    proc K::pack_audit_result(status: UInt32, event_id: UInt64) -> UInt64 {
+        let event_norm = normalize_u64(event_id, AUDIT_STATUS_FACTOR);
+        return (status * AUDIT_STATUS_FACTOR) + event_norm;
+    }
+
+    proc K::audit_result_status(packed: UInt64) -> UInt32 {
+        return packed / AUDIT_STATUS_FACTOR;
+    }
+
+    proc K::audit_result_event_id(packed: UInt64) -> UInt64 {
+        let status = audit_result_status(packed);
+        return packed - (status * AUDIT_STATUS_FACTOR);
+    }
+
+    proc K::authorize_boundary_transition_with_audit(
+        token: UInt64,
+        signature: UInt64,
+        requested_operation: UInt32,
+        requested_scope: UInt32,
+        requested_permissions: UInt64,
+        caller_domain: UInt32,
+        target_domain: UInt32,
+        process_id: UInt32,
+        logical_tick: UInt32,
+        revoked_token: UInt64,
+        revoked_before_tick: UInt32,
+        issuer_secret: UInt64,
+        attestation_digest: UInt64,
+        provider_attested: UInt32,
+        policy_flags: UInt64
+    ) -> UInt64 {
+        let status = authorize_boundary_transition(
+            token,
+            signature,
+            requested_operation,
+            requested_scope,
+            requested_permissions,
+            caller_domain,
+            target_domain,
+            process_id,
+            logical_tick,
+            revoked_token,
+            revoked_before_tick,
+            issuer_secret,
+            attestation_digest,
+            provider_attested,
+            policy_flags
+        );
+
+        let event_id = emit_audit_event(
+            token,
+            caller_domain,
+            target_domain,
+            process_id,
+            status,
+            logical_tick
+        );
+
+        return pack_audit_result(status, event_id);
+    }
+
+    // Compatibility wrappers retained for existing integration callers.
+
+    proc K::create_capability(subject: UInt64, permissions: UInt64) -> UInt64 {
+        let operation = default_operation_from_permissions(permissions);
+        if operation == 0 {
+            return TOKEN_INVALID;
+        }
+
+        let policy = POLICY_ALLOW_LOCAL + POLICY_REQUIRE_AUDIT;
+        return issue_capability_token(
+            DOMAIN_K,
+            subject,
+            DOMAIN_K,
+            DOMAIN_K,
+            operation,
+            SCOPE_LOCAL,
+            1,
+            20,
+            1,
+            permissions,
+            policy
+        );
     }
 
     proc K::verify_capability(token: UInt64) -> UInt32 {
         if token == TOKEN_INVALID {
             return STATUS_INVALID_CAPABILITY;
-        } else {
-            return STATUS_OK;
         }
+
+        let signature = sign_capability_token(token, DEFAULT_ISSUER_SECRET, DEFAULT_ATTESTATION_DIGEST);
+
+        return validate_capability_token(
+            token,
+            signature,
+            token_source(token),
+            token_target(token),
+            token_operation(token),
+            token_scope(token),
+            token_subject(token),
+            token_issued_tick(token),
+            TOKEN_INVALID,
+            0,
+            DEFAULT_ISSUER_SECRET,
+            DEFAULT_ATTESTATION_DIGEST
+        );
     }
 
     proc K::check_permission(token: UInt64, requested: UInt64) -> UInt32 {
-        if token == TOKEN_INVALID {
-            return STATUS_DENIED;
-        } else {
-            if requested == PERM_NONE {
-                return STATUS_DENIED;
-            } else {
+        let verified = verify_capability(token);
+        if verified == STATUS_OK {
+            let op = token_operation(token);
+            let required = operation_required_permission(op);
+            let allowed = has_flag(requested, required);
+            if allowed == 1 {
                 return STATUS_OK;
+            } else {
+                return STATUS_DENIED;
             }
+        } else {
+            return STATUS_DENIED;
         }
     }
 
     proc K::send_cross_domain_message(token: UInt64, payload: UInt64) -> UInt32 {
-        let capability_ok = verify_capability(token);
-        if capability_ok == STATUS_OK {
-            if payload == PAYLOAD_EMPTY {
-                return STATUS_DENIED;
-            } else {
-                return STATUS_OK;
-            }
-        } else {
+        if payload == 0 {
             return STATUS_DENIED;
         }
+
+        if token == TOKEN_INVALID {
+            return STATUS_INVALID_CAPABILITY;
+        }
+
+        let op = token_operation(token);
+        let scope = token_scope(token);
+        let signature = sign_capability_token(token, DEFAULT_ISSUER_SECRET, DEFAULT_ATTESTATION_DIGEST);
+        let policy = POLICY_ALLOW_LOCAL + POLICY_ALLOW_CROSS_DOMAIN + POLICY_REQUIRE_AUDIT;
+        let permissions = operation_required_permission(op);
+
+        return authorize_boundary_transition(
+            token,
+            signature,
+            op,
+            scope,
+            permissions,
+            token_source(token),
+            token_target(token),
+            token_subject(token),
+            token_issued_tick(token) + 1,
+            TOKEN_INVALID,
+            0,
+            DEFAULT_ISSUER_SECRET,
+            DEFAULT_ATTESTATION_DIGEST,
+            1,
+            policy
+        );
     }
 
     proc K::validate_message(payload: UInt64) -> UInt32 {
-        if payload == PAYLOAD_EMPTY {
+        if payload == 0 {
             return STATUS_DENIED;
         } else {
             return STATUS_OK;
@@ -103,14 +1112,19 @@ forge XdvSdbm {
     }
 
     proc K::add_access_control_entry(subject: UInt64, permissions: UInt64) -> UInt32 {
-        if subject == PAYLOAD_EMPTY {
+        if subject == 0 {
+            return STATUS_DENIED;
+        }
+
+        if permissions == PERM_NONE {
+            return STATUS_DENIED;
+        }
+
+        let operation = default_operation_from_permissions(permissions);
+        if operation == 0 {
             return STATUS_DENIED;
         } else {
-            if permissions == PERM_NONE {
-                return STATUS_DENIED;
-            } else {
-                return STATUS_OK;
-            }
+            return STATUS_OK;
         }
     }
 
@@ -119,8 +1133,8 @@ forge XdvSdbm {
     }
 
     proc K::create_security_policy(mask: UInt64) -> UInt64 {
-        if mask == PERM_NONE {
-            return PERM_READ;
+        if mask == 0 {
+            return POLICY_ALLOW_LOCAL + POLICY_REQUIRE_AUDIT;
         } else {
             return mask;
         }
@@ -130,43 +1144,98 @@ forge XdvSdbm {
         if event_code == 0 {
             return STATUS_DENIED;
         } else {
+            emit "XDV SDBM: audit record acknowledged";
             return STATUS_OK;
         }
     }
 
     proc K::get_security_stats() -> UInt32 {
-        return 1;
+        return SDBM_CAPABILITY_API_VERSION + SDBM_ATTESTATION_API_VERSION + SDBM_AUDIT_API_VERSION;
     }
 
     proc K::generate_nonce(seed: UInt64) -> UInt64 {
-        return seed + 1;
+        return normalize_u64(seed + 17, TOKEN_NONCE_CYCLE);
     }
 
     proc K::sign_message(payload: UInt64, nonce: UInt64) -> UInt64 {
-        if payload == PAYLOAD_EMPTY {
-            return SIGNATURE_INVALID;
+        if payload == 0 {
+            return 0;
+        }
+
+        if nonce == 0 {
+            return 0;
+        }
+
+        let mixed = (payload * 13) + (nonce * 7) + SIGNATURE_SEED;
+        return normalize_u64(mixed, SIGNATURE_CYCLE);
+    }
+
+    proc K::verify_signature(payload: UInt64, signature: UInt64) -> UInt32 {
+        if payload == 0 {
+            return STATUS_DENIED;
+        }
+
+        if signature == 0 {
+            return STATUS_DENIED;
+        }
+
+        let expected = sign_message(payload, 1);
+        if signature == expected {
+            return STATUS_OK;
         } else {
-            if nonce == PAYLOAD_EMPTY {
-                return SIGNATURE_INVALID;
+            return STATUS_DENIED;
+        }
+    }
+
+    proc K::revoke_capability(token: UInt64, revoked_token: UInt64, revoked_before_tick: UInt32, evaluation_tick: UInt32) -> UInt32 {
+        if token == TOKEN_INVALID {
+            return STATUS_INVALID_CAPABILITY;
+        }
+
+        if revoked_token == TOKEN_INVALID {
+        } else {
+            if token == revoked_token {
+                return STATUS_REVOKED;
+            }
+        }
+
+        if revoked_before_tick == 0 {
+            return STATUS_OK;
+        } else {
+            let issued = token_issued_tick(token);
+            if issued <= revoked_before_tick {
+                if evaluation_tick >= revoked_before_tick {
+                    return STATUS_REVOKED;
+                } else {
+                    return STATUS_OK;
+                }
             } else {
-                return TOKEN_BASE + payload + nonce;
+                return STATUS_OK;
             }
         }
     }
 
-    proc K::verify_signature(payload: UInt64, signature: UInt64) -> UInt32 {
-        if payload == PAYLOAD_EMPTY {
-            return STATUS_DENIED;
-        } else {
-            if signature == SIGNATURE_INVALID {
-                return STATUS_DENIED;
-            } else {
-                if signature < payload {
-                    return STATUS_DENIED;
-                } else {
-                    return STATUS_OK;
-                }
-            }
-        }
+    proc K::xdv_sdbm_interface_version_major() -> UInt32 {
+        return SDBM_INTERFACE_VERSION_MAJOR;
+    }
+
+    proc K::xdv_sdbm_interface_version_minor() -> UInt32 {
+        return SDBM_INTERFACE_VERSION_MINOR;
+    }
+
+    proc K::xdv_sdbm_interface_version_patch() -> UInt32 {
+        return SDBM_INTERFACE_VERSION_PATCH;
+    }
+
+    proc K::xdv_sdbm_capability_api_version() -> UInt32 {
+        return SDBM_CAPABILITY_API_VERSION;
+    }
+
+    proc K::xdv_sdbm_attestation_api_version() -> UInt32 {
+        return SDBM_ATTESTATION_API_VERSION;
+    }
+
+    proc K::xdv_sdbm_audit_api_version() -> UInt32 {
+        return SDBM_AUDIT_API_VERSION;
     }
 }

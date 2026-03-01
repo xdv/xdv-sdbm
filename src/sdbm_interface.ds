@@ -1,15 +1,48 @@
-﻿// File: sdbm_interface.ds
-// Stable interface surface for XDV Secure Domain Boundary Manager
+// File: sdbm_interface.ds
+// Stable interface surface for XDV Secure Domain Boundary Manager.
 forge XdvSdbmInterface {
     const INTERFACE_VERSION_MAJOR: UInt32 = 0;
     const INTERFACE_VERSION_MINOR: UInt32 = 1;
     const INTERFACE_VERSION_PATCH: UInt32 = 0;
+
+    const CAPABILITY_API_VERSION: UInt32 = 1;
+    const ATTESTATION_API_VERSION: UInt32 = 1;
+    const AUDIT_API_VERSION: UInt32 = 1;
+
+    // Namespaced stable version surface for split dependency consumers.
+    proc K::xdv_sdbm_interface_surface_version_major() -> UInt32 {
+        return INTERFACE_VERSION_MAJOR;
+    }
+
+    proc K::xdv_sdbm_interface_surface_version_minor() -> UInt32 {
+        return INTERFACE_VERSION_MINOR;
+    }
+
+    proc K::xdv_sdbm_interface_surface_version_patch() -> UInt32 {
+        return INTERFACE_VERSION_PATCH;
+    }
+
+    proc K::xdv_sdbm_capability_surface_version() -> UInt32 {
+        return CAPABILITY_API_VERSION;
+    }
+
+    proc K::xdv_sdbm_attestation_surface_version() -> UInt32 {
+        return ATTESTATION_API_VERSION;
+    }
+
+    proc K::xdv_sdbm_audit_surface_version() -> UInt32 {
+        return AUDIT_API_VERSION;
+    }
+
+    // Compatibility wrappers retained for callers using generic names.
     proc K::interface_version_major() -> UInt32 {
         return INTERFACE_VERSION_MAJOR;
     }
+
     proc K::interface_version_minor() -> UInt32 {
         return INTERFACE_VERSION_MINOR;
     }
+
     proc K::interface_version_patch() -> UInt32 {
         return INTERFACE_VERSION_PATCH;
     }

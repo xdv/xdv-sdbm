@@ -1,11 +1,13 @@
-﻿# XDV Secure Domain Boundary Manager Workspace Manifest
+# XDV Secure Domain Boundary Manager Workspace Manifest
 [workspace]
 name = "xdv_sdbm"
 version = "0.1.0"
-description = "Standalone Secure Domain Boundary Manager project for capability validation, policy enforcement, and security boundary controls."
+description = "Standalone Secure Domain Boundary Manager project for deterministic capability validation, boundary policy enforcement, and attestation/audit controls."
+
 [sector]
 name = "xdv_sdbm"
 path = "src"
+
 [target.x64-pc-none]
 linker = "ld"
 linker_flags = ["-nostdlib", "-static"]

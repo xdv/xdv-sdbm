@@ -1,70 +1,440 @@
 // File: sdbm_tests.ds - This file is part of XDV
 // Copyright (c) 2026 Dust LLC, and Contributors
 // Description:
-//   XDV Kernel - SDBM Tests
+//   XDV SDBM tests for deterministic capability validation/revocation,
+//   boundary authorization, and attestation/audit paths.
 
 forge SdbmTests {
 
-    proc K::test_permission_constants() {
-        let a = 1;
-        let b = 2;
-        return 0;
+    const TEST_PASS: UInt32 = 0;
+    const TEST_FAIL: UInt32 = 1;
+
+    const STATUS_OK: UInt32 = 0;
+    const STATUS_DENIED: UInt32 = 1;
+    const STATUS_INVALID_CAPABILITY: UInt32 = 2;
+    const STATUS_REVOKED: UInt32 = 3;
+    const STATUS_EXPIRED: UInt32 = 4;
+    const STATUS_ATTESTATION_REQUIRED: UInt32 = 9;
+    const STATUS_ATTESTATION_FAILED: UInt32 = 10;
+
+    const DOMAIN_K: UInt32 = 0;
+    const DOMAIN_Q: UInt32 = 1;
+    const DOMAIN_PHI: UInt32 = 2;
+
+    const OP_READ: UInt32 = 1;
+    const OP_TRANSFER: UInt32 = 4;
+    const OP_TRANSFORM: UInt32 = 6;
+
+    const SCOPE_LOCAL: UInt32 = 1;
+    const SCOPE_ATTESTED_CROSS: UInt32 = 4;
+
+    const PERM_READ: UInt64 = 1;
+    const PERM_WRITE: UInt64 = 2;
+    const PERM_TRANSFER: UInt64 = 8;
+    const PERM_MEASURE: UInt64 = 16;
+    const PERM_TRANSFORM: UInt64 = 32;
+
+    const POLICY_ALLOW_LOCAL: UInt64 = 1;
+    const POLICY_ALLOW_CROSS_DOMAIN: UInt64 = 2;
+    const POLICY_REQUIRE_ATTESTATION: UInt64 = 4;
+    const POLICY_REQUIRE_AUDIT: UInt64 = 8;
+
+    const TOKEN_INVALID: UInt64 = 0;
+
+    const DEFAULT_ISSUER_SECRET: UInt64 = 419;
+    const DEFAULT_ATTESTATION_DIGEST: UInt64 = 211;
+
+    proc K::expect_status(actual: UInt32, expected: UInt32) -> UInt32 {
+        if actual == expected {
+            return TEST_PASS;
+        } else {
+            return TEST_FAIL;
+        }
     }
 
-    proc K::test_security_domain_enum() {
-        return 0;
+    proc K::cross_policy() -> UInt64 {
+        return POLICY_ALLOW_LOCAL + POLICY_ALLOW_CROSS_DOMAIN + POLICY_REQUIRE_ATTESTATION + POLICY_REQUIRE_AUDIT;
     }
 
-    proc K::test_create_capability() {
-        return 0;
+    proc K::build_transfer_token(subject: UInt32, issued: UInt32, ttl: UInt32) -> UInt64 {
+        return issue_capability_token(
+            DOMAIN_K,
+            subject,
+            DOMAIN_K,
+            DOMAIN_Q,
+            OP_TRANSFER,
+            SCOPE_ATTESTED_CROSS,
+            issued,
+            ttl,
+            7,
+            PERM_TRANSFER + PERM_MEASURE,
+            cross_policy()
+        );
     }
 
-    proc K::test_check_permission_granted() {
-        return 0;
+    proc K::build_transfer_signature(token: UInt64) -> UInt64 {
+        return sign_capability_token(token, DEFAULT_ISSUER_SECRET, DEFAULT_ATTESTATION_DIGEST);
     }
 
-    proc K::test_check_permission_not_granted() {
-        return 0;
+    proc K::test_issue_and_validate_token_success() -> UInt32 {
+        let token = build_transfer_token(42, 100, 20);
+        if token == TOKEN_INVALID {
+            return TEST_FAIL;
+        }
+
+        let signature = build_transfer_signature(token);
+        let status = validate_capability_token(
+            token,
+            signature,
+            DOMAIN_K,
+            DOMAIN_Q,
+            OP_TRANSFER,
+            SCOPE_ATTESTED_CROSS,
+            42,
+            110,
+            TOKEN_INVALID,
+            0,
+            DEFAULT_ISSUER_SECRET,
+            DEFAULT_ATTESTATION_DIGEST
+        );
+
+        return expect_status(status, STATUS_OK);
     }
 
-    proc K::test_verify_capability_valid() {
-        return 0;
+    proc K::test_validate_rejects_expired_token() -> UInt32 {
+        let token = build_transfer_token(50, 100, 5);
+        if token == TOKEN_INVALID {
+            return TEST_FAIL;
+        }
+
+        let signature = build_transfer_signature(token);
+        let status = validate_capability_token(
+            token,
+            signature,
+            DOMAIN_K,
+            DOMAIN_Q,
+            OP_TRANSFER,
+            SCOPE_ATTESTED_CROSS,
+            50,
+            120,
+            TOKEN_INVALID,
+            0,
+            DEFAULT_ISSUER_SECRET,
+            DEFAULT_ATTESTATION_DIGEST
+        );
+
+        return expect_status(status, STATUS_EXPIRED);
     }
 
-    proc K::test_verify_capability_mismatch() {
-        return 0;
+    proc K::test_validate_rejects_revoked_token_id() -> UInt32 {
+        let token = build_transfer_token(60, 80, 20);
+        if token == TOKEN_INVALID {
+            return TEST_FAIL;
+        }
+
+        let signature = build_transfer_signature(token);
+        let status = validate_capability_token(
+            token,
+            signature,
+            DOMAIN_K,
+            DOMAIN_Q,
+            OP_TRANSFER,
+            SCOPE_ATTESTED_CROSS,
+            60,
+            90,
+            token,
+            0,
+            DEFAULT_ISSUER_SECRET,
+            DEFAULT_ATTESTATION_DIGEST
+        );
+
+        return expect_status(status, STATUS_REVOKED);
     }
 
-    proc K::test_send_cross_domain_message_valid() {
-        return 0;
+    proc K::test_validate_rejects_revoked_cutoff() -> UInt32 {
+        let token = build_transfer_token(61, 30, 20);
+        if token == TOKEN_INVALID {
+            return TEST_FAIL;
+        }
+
+        let signature = build_transfer_signature(token);
+        let status = validate_capability_token(
+            token,
+            signature,
+            DOMAIN_K,
+            DOMAIN_Q,
+            OP_TRANSFER,
+            SCOPE_ATTESTED_CROSS,
+            61,
+            40,
+            TOKEN_INVALID,
+            35,
+            DEFAULT_ISSUER_SECRET,
+            DEFAULT_ATTESTATION_DIGEST
+        );
+
+        return expect_status(status, STATUS_REVOKED);
     }
 
-    proc K::test_send_cross_domain_message_no_permission() {
-        return 0;
+    proc K::test_authorize_requires_attestation() -> UInt32 {
+        let token = build_transfer_token(70, 10, 30);
+        if token == TOKEN_INVALID {
+            return TEST_FAIL;
+        }
+
+        let signature = build_transfer_signature(token);
+        let status = authorize_boundary_transition(
+            token,
+            signature,
+            OP_TRANSFER,
+            SCOPE_ATTESTED_CROSS,
+            PERM_TRANSFER,
+            DOMAIN_K,
+            DOMAIN_Q,
+            70,
+            15,
+            TOKEN_INVALID,
+            0,
+            DEFAULT_ISSUER_SECRET,
+            DEFAULT_ATTESTATION_DIGEST,
+            0,
+            cross_policy()
+        );
+
+        return expect_status(status, STATUS_ATTESTATION_REQUIRED);
     }
 
-    proc K::test_validate_message_valid() {
-        return 0;
+    proc K::test_authorize_cross_domain_success() -> UInt32 {
+        let token = build_transfer_token(71, 10, 30);
+        if token == TOKEN_INVALID {
+            return TEST_FAIL;
+        }
+
+        let signature = build_transfer_signature(token);
+        let status = authorize_boundary_transition(
+            token,
+            signature,
+            OP_TRANSFER,
+            SCOPE_ATTESTED_CROSS,
+            PERM_TRANSFER,
+            DOMAIN_K,
+            DOMAIN_Q,
+            71,
+            20,
+            TOKEN_INVALID,
+            0,
+            DEFAULT_ISSUER_SECRET,
+            DEFAULT_ATTESTATION_DIGEST,
+            1,
+            cross_policy()
+        );
+
+        return expect_status(status, STATUS_OK);
     }
 
-    proc K::test_validate_message_same_domain() {
-        return 0;
+    proc K::test_authorize_rejects_permission_escalation() -> UInt32 {
+        let token = build_transfer_token(72, 10, 30);
+        if token == TOKEN_INVALID {
+            return TEST_FAIL;
+        }
+
+        let signature = build_transfer_signature(token);
+        let status = authorize_boundary_transition(
+            token,
+            signature,
+            OP_TRANSFER,
+            SCOPE_ATTESTED_CROSS,
+            PERM_READ,
+            DOMAIN_K,
+            DOMAIN_Q,
+            72,
+            20,
+            TOKEN_INVALID,
+            0,
+            DEFAULT_ISSUER_SECRET,
+            DEFAULT_ATTESTATION_DIGEST,
+            1,
+            cross_policy()
+        );
+
+        return expect_status(status, STATUS_DENIED);
     }
 
-    proc K::test_create_security_policy() {
-        return 0;
+    proc K::test_transform_issue_requires_phi_target() -> UInt32 {
+        let token = issue_capability_token(
+            DOMAIN_K,
+            73,
+            DOMAIN_K,
+            DOMAIN_Q,
+            OP_TRANSFORM,
+            SCOPE_ATTESTED_CROSS,
+            10,
+            30,
+            1,
+            PERM_TRANSFORM,
+            cross_policy()
+        );
+
+        if token == TOKEN_INVALID {
+            return TEST_PASS;
+        } else {
+            return TEST_FAIL;
+        }
     }
 
-    proc K::test_check_cross_domain_access_same_domain() {
-        return 0;
+    proc K::test_provider_attestation_success() -> UInt32 {
+        let status = validate_provider_attestation(
+            DOMAIN_Q,
+            900,
+            PERM_MEASURE + PERM_TRANSFER,
+            4,
+            900,
+            PERM_MEASURE,
+            3
+        );
+
+        return expect_status(status, STATUS_OK);
     }
 
-    proc K::test_get_security_stats() {
-        return 0;
+    proc K::test_provider_attestation_version_fail() -> UInt32 {
+        let status = validate_provider_attestation(
+            DOMAIN_Q,
+            900,
+            PERM_MEASURE + PERM_TRANSFER,
+            2,
+            900,
+            PERM_MEASURE,
+            3
+        );
+
+        return expect_status(status, STATUS_ATTESTATION_FAILED);
     }
 
-    proc K::test_generate_nonce() {
-        return 0;
+    proc K::test_authorize_with_audit_bundle() -> UInt32 {
+        let token = build_transfer_token(74, 10, 30);
+        if token == TOKEN_INVALID {
+            return TEST_FAIL;
+        }
+
+        let signature = build_transfer_signature(token);
+        let packed = authorize_boundary_transition_with_audit(
+            token,
+            signature,
+            OP_TRANSFER,
+            SCOPE_ATTESTED_CROSS,
+            PERM_TRANSFER,
+            DOMAIN_K,
+            DOMAIN_Q,
+            74,
+            20,
+            TOKEN_INVALID,
+            0,
+            DEFAULT_ISSUER_SECRET,
+            DEFAULT_ATTESTATION_DIGEST,
+            1,
+            cross_policy()
+        );
+
+        let status = audit_result_status(packed);
+        let event_id = audit_result_event_id(packed);
+
+        if status == STATUS_OK {
+            if event_id > 0 {
+                return TEST_PASS;
+            } else {
+                return TEST_FAIL;
+            }
+        } else {
+            return TEST_FAIL;
+        }
     }
 
+    proc K::test_compat_create_and_verify() -> UInt32 {
+        let token = create_capability(5, PERM_READ);
+        if token == TOKEN_INVALID {
+            return TEST_FAIL;
+        }
+
+        let status = verify_capability(token);
+        return expect_status(status, STATUS_OK);
+    }
+
+    proc K::test_compat_permission_denied() -> UInt32 {
+        let token = create_capability(6, PERM_READ);
+        if token == TOKEN_INVALID {
+            return TEST_FAIL;
+        }
+
+        let status = check_permission(token, PERM_WRITE);
+        return expect_status(status, STATUS_DENIED);
+    }
+
+    proc K::run_all() -> UInt32 {
+        let t1 = test_issue_and_validate_token_success();
+        if t1 == TEST_PASS {
+            let t2 = test_validate_rejects_expired_token();
+            if t2 == TEST_PASS {
+                let t3 = test_validate_rejects_revoked_token_id();
+                if t3 == TEST_PASS {
+                    let t4 = test_validate_rejects_revoked_cutoff();
+                    if t4 == TEST_PASS {
+                        let t5 = test_authorize_requires_attestation();
+                        if t5 == TEST_PASS {
+                            let t6 = test_authorize_cross_domain_success();
+                            if t6 == TEST_PASS {
+                                let t7 = test_authorize_rejects_permission_escalation();
+                                if t7 == TEST_PASS {
+                                    let t8 = test_transform_issue_requires_phi_target();
+                                    if t8 == TEST_PASS {
+                                        let t9 = test_provider_attestation_success();
+                                        if t9 == TEST_PASS {
+                                            let t10 = test_provider_attestation_version_fail();
+                                            if t10 == TEST_PASS {
+                                                let t11 = test_authorize_with_audit_bundle();
+                                                if t11 == TEST_PASS {
+                                                    let t12 = test_compat_create_and_verify();
+                                                    if t12 == TEST_PASS {
+                                                        let t13 = test_compat_permission_denied();
+                                                        if t13 == TEST_PASS {
+                                                            return TEST_PASS;
+                                                        } else {
+                                                            return TEST_FAIL;
+                                                        }
+                                                    } else {
+                                                        return TEST_FAIL;
+                                                    }
+                                                } else {
+                                                    return TEST_FAIL;
+                                                }
+                                            } else {
+                                                return TEST_FAIL;
+                                            }
+                                        } else {
+                                            return TEST_FAIL;
+                                        }
+                                    } else {
+                                        return TEST_FAIL;
+                                    }
+                                } else {
+                                    return TEST_FAIL;
+                                }
+                            } else {
+                                return TEST_FAIL;
+                            }
+                        } else {
+                            return TEST_FAIL;
+                        }
+                    } else {
+                        return TEST_FAIL;
+                    }
+                } else {
+                    return TEST_FAIL;
+                }
+            } else {
+                return TEST_FAIL;
+            }
+        } else {
+            return TEST_FAIL;
+        }
+    }
 }
